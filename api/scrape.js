@@ -13,10 +13,36 @@ const SCRAPINGBEE_KEY = process.env.SCRAPINGBEE_API_KEY;
 let cache = { data: null, timestamp: 0 };
 const CACHE_TTL = 10 * 60 * 1000;
 
+// 🧠 Smart value extractor – tries data-value, then .itemvalue, then regex on whole column
+function extractValue(col) {
+  // 1. Try data-value attribute
+  let val = parseInt(col.getAttribute('data-value'));
+  if (!isNaN(val) && val > 0) return val;
+
+  // 2. Try .itemvalue element
+  const valEl = col.querySelector('.itemvalue');
+  if (valEl) {
+    const text = valEl.text.replace(/,/g, '').trim();
+    const num = parseInt(text);
+    if (!isNaN(num) && num > 0) return num;
+  }
+
+  // 3. 🔥 FALLBACK: scan all text in the column for the largest number
+  const text = col.textContent;
+  const matches = text.match(/\b(\d{1,6})\b/g);
+  if (matches) {
+    const nums = matches.map(Number).filter(n => n > 10); // ignore tiny numbers like 1, 2
+    if (nums.length > 0) {
+      return Math.max(...nums); // the value is usually the biggest number
+    }
+  }
+
+  return null; // couldn't find a value
+}
+
 async function scrapeCategory(name, url) {
   console.log(`[${name}] Start scraping...`);
 
-  // Try with render_js=true (some sites need it)
   const targetUrl = `https://app.scrapingbee.com/api/v1/?api_key=${SCRAPINGBEE_KEY}&url=${encodeURIComponent(url)}&render_js=true&premium_proxy=true&block_ads=true&timeout=15000`;
 
   const response = await fetch(targetUrl);
@@ -28,9 +54,8 @@ async function scrapeCategory(name, url) {
   const html = await response.text();
   console.log(`[${name}] HTML length: ${html.length}`);
 
-  // If HTML is suspiciously short or contains error message
   if (html.length < 500 || html.includes('Access Denied') || html.includes('Blocked')) {
-    console.log(`[${name}] Blocked or empty response (length ${html.length})`);
+    console.log(`[${name}] Blocked or empty response`);
     return { regular: {}, chroma: {} };
   }
 
@@ -46,16 +71,9 @@ async function scrapeCategory(name, url) {
     if (!head) return;
 
     let nameTag = head.text.trim();
-    let value = parseInt(col.getAttribute('data-value'));
+    const value = extractValue(col); // 🆕 using the smart extractor
 
-    if (!value || isNaN(value) || value <= 0) {
-      const valEl = col.querySelector('.itemvalue');
-      if (valEl) {
-        value = parseInt(valEl.text.replace(/,/g, '').trim());
-      }
-    }
-
-    if (!value || isNaN(value) || value <= 0) return;
+    if (!value || value <= 0) return;
 
     const classAttr = col.getAttribute('class') || '';
     const isChroma = classAttr.includes('chroma') ||
@@ -87,7 +105,7 @@ module.exports = async (req, res) => {
 
   const now = Date.now();
   if (cache.data && (now - cache.timestamp) < CACHE_TTL) {
-    console.log('Serving from cache');
+    console.log('✅ Serving from cache');
     return res.status(200).json(cache.data);
   }
 
