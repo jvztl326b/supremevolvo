@@ -13,11 +13,16 @@ module.exports = async (req, res) => {
 
   let browser = null;
   try {
-    // Launch Chromium using the Vercel‑compatible binary
+    const executablePath = await chromium.executablePath();
+
+    // CRITICAL: Set library path so Chromium can find extracted libs
+    const execDir = executablePath.substring(0, executablePath.lastIndexOf('/'));
+    process.env.LD_LIBRARY_PATH = execDir + ':' + (process.env.LD_LIBRARY_PATH || '');
+
     browser = await puppeteer.launch({
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(),
+      executablePath: executablePath,
       headless: chromium.headless,
       timeout: 30000,
     });
@@ -49,7 +54,6 @@ module.exports = async (req, res) => {
 
     await page.waitForTimeout(2000);
 
-    // Extract data
     const data = await page.evaluate(() => {
       const regular = {};
       const chroma = {};
