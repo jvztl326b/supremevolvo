@@ -1,8 +1,6 @@
 {
   "name": "supremevalues-scraper",
   "version": "1.0.0",
-  "description": "Scrapes SupremeValues for MM2 item values",
-  "main": "api/scrape.js",
   "dependencies": {
     "puppeteer-core": "^23.0.0",
     "@sparticuz/chromium": "^123.0.0"
