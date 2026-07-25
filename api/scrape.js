@@ -11,7 +11,6 @@ module.exports = async (req, res) => {
   const url = `https://supremevalues.com/mm2/${category}`;
 
   try {
-    // Fetch the HTML
     const response = await fetch(url, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -21,12 +20,15 @@ module.exports = async (req, res) => {
     const html = await response.text();
     const root = parse(html);
 
+    // Debug: count how many .itemcolumn elements we found
+    const columns = root.querySelectorAll('.itemcolumn');
+    console.log(`Found ${columns.length} .itemcolumn elements`);
+
     const regular = {};
     const chroma = {};
+    let sample = [];
 
-    // Find all .itemcolumn divs
-    const columns = root.querySelectorAll('.itemcolumn');
-    columns.forEach(col => {
+    columns.forEach((col, index) => {
       const head = col.querySelector('.itemhead');
       if (!head) return;
 
@@ -42,9 +44,9 @@ module.exports = async (req, res) => {
 
       if (!value || isNaN(value) || value <= 0) return;
 
-      // Chroma detection
-      const classList = col.classNames || [];
-      const isChroma = classList.includes('chroma') ||
+      // Check if it's chroma by class or name prefix
+      const classAttr = col.getAttribute('class') || '';
+      const isChroma = classAttr.includes('chroma') ||
                        name.toLowerCase().startsWith('chroma ') ||
                        name.toLowerCase().startsWith('c. ');
 
@@ -54,7 +56,24 @@ module.exports = async (req, res) => {
       } else {
         regular[name] = value;
       }
+
+      // Save a sample of the first 5 items for debugging
+      if (index < 5) {
+        sample.push({ name, value, isChroma, classAttr: classAttr.substring(0, 100) });
+      }
     });
+
+    // If no items found, return debug info
+    if (Object.keys(regular).length === 0 && Object.keys(chroma).length === 0) {
+      return res.status(200).json({
+        error: 'No items parsed',
+        debug: {
+          columnsFound: columns.length,
+          sample: sample,
+          htmlPreview: html.substring(0, 2000), // first 2000 chars
+        },
+      });
+    }
 
     res.status(200).json({ regular, chroma });
   } catch (error) {
