@@ -1,8 +1,6 @@
 {
   "name": "supremevalues-scraper",
   "version": "1.0.0",
-  "description": "Scrapes SupremeValues without Puppeteer",
-  "main": "api/scrape.js",
   "dependencies": {
     "node-html-parser": "^6.1.13"
   }
