@@ -1,5 +1,4 @@
-const { parse } = require('node-html-parser');
-
+// api/scrape.js – uses ScrapingBee to render the page
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
 
@@ -10,25 +9,32 @@ module.exports = async (req, res) => {
   const category = req.query.category || 'godlies';
   const url = `https://supremevalues.com/mm2/${category}`;
 
+  // Get your ScrapingBee API key from environment variables
+  const apiKey = process.env.SCRAPINGBEE_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({ error: 'Missing SCRAPINGBEE_API_KEY environment variable' });
+  }
+
   try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      },
-    });
+    // Use ScrapingBee to render the page with JavaScript
+    const targetUrl = `https://app.scrapingbee.com/api/v1/?api_key=${apiKey}&url=${encodeURIComponent(url)}&render_js=true&premium_proxy=true&country_code=us&block_ads=true&timeout=20000`;
 
+    const response = await fetch(targetUrl);
     const html = await response.text();
-    const root = parse(html);
 
-    // Debug: count how many .itemcolumn elements we found
-    const columns = root.querySelectorAll('.itemcolumn');
-    console.log(`Found ${columns.length} .itemcolumn elements`);
+    if (html.includes('Blocked') || html.includes('Access Denied')) {
+      return res.status(403).json({ error: 'Page blocked, try using a different proxy or country' });
+    }
+
+    // Parse HTML with node-html-parser
+    const { parse } = require('node-html-parser');
+    const root = parse(html);
 
     const regular = {};
     const chroma = {};
-    let sample = [];
 
-    columns.forEach((col, index) => {
+    const columns = root.querySelectorAll('.itemcolumn');
+    columns.forEach(col => {
       const head = col.querySelector('.itemhead');
       if (!head) return;
 
@@ -44,7 +50,6 @@ module.exports = async (req, res) => {
 
       if (!value || isNaN(value) || value <= 0) return;
 
-      // Check if it's chroma by class or name prefix
       const classAttr = col.getAttribute('class') || '';
       const isChroma = classAttr.includes('chroma') ||
                        name.toLowerCase().startsWith('chroma ') ||
@@ -56,24 +61,7 @@ module.exports = async (req, res) => {
       } else {
         regular[name] = value;
       }
-
-      // Save a sample of the first 5 items for debugging
-      if (index < 5) {
-        sample.push({ name, value, isChroma, classAttr: classAttr.substring(0, 100) });
-      }
     });
-
-    // If no items found, return debug info
-    if (Object.keys(regular).length === 0 && Object.keys(chroma).length === 0) {
-      return res.status(200).json({
-        error: 'No items parsed',
-        debug: {
-          columnsFound: columns.length,
-          sample: sample,
-          htmlPreview: html.substring(0, 2000), // first 2000 chars
-        },
-      });
-    }
 
     res.status(200).json({ regular, chroma });
   } catch (error) {
