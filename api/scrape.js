@@ -9,16 +9,28 @@ const CATEGORIES = {
 
 const SCRAPINGBEE_KEY = process.env.SCRAPINGBEE_API_KEY;
 
+// ⏱️ In-memory cache (resets on cold start, but saves repeated calls)
+let cache = { data: null, timestamp: 0 };
+const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
 async function scrapeCategory(name, url) {
   console.log(`Scraping ${name}...`);
 
-  const targetUrl = `https://app.scrapingbee.com/api/v1/?api_key=${SCRAPINGBEE_KEY}&url=${encodeURIComponent(url)}&render_js=true&premium_proxy=true&country_code=us&block_ads=true&timeout=20000`;
+  // 🚀 CRITICAL FIX: render_js=false (SupremeValues doesn't need JS)
+  // ✅ premium_proxy=false (faster, SupremeValues doesn't block basic requests)
+  const targetUrl = `https://app.scrapingbee.com/api/v1/?api_key=${SCRAPINGBEE_KEY}&url=${encodeURIComponent(url)}&render_js=false&premium_proxy=false&block_ads=true&timeout=8000`;
 
   const response = await fetch(targetUrl);
+  
+  if (!response.ok) {
+    console.log(`HTTP error ${response.status} for ${name}`);
+    return { regular: {}, chroma: {} };
+  }
+
   const html = await response.text();
 
-  if (html.includes('Blocked') || html.includes('Access Denied')) {
-    console.log(`Blocked: ${name}`);
+  if (html.includes('Blocked') || html.includes('Access Denied') || html.length < 100) {
+    console.log(`Blocked or empty: ${name}`);
     return { regular: {}, chroma: {} };
   }
 
@@ -73,7 +85,13 @@ module.exports = async (req, res) => {
     return res.status(500).json({ error: 'Missing SCRAPINGBEE_API_KEY environment variable' });
   }
 
-  // Check if user wants just one category
+  // 📦 Serve from cache if fresh
+  const now = Date.now();
+  if (cache.data && (now - cache.timestamp) < CACHE_TTL) {
+    console.log('✅ Serving from cache');
+    return res.status(200).json(cache.data);
+  }
+
   const singleCategory = req.query.category;
   if (singleCategory) {
     const url = CATEGORIES[singleCategory];
@@ -84,14 +102,12 @@ module.exports = async (req, res) => {
     return res.status(200).json(result);
   }
 
-  // Scrape all categories in parallel
   try {
     const tasks = Object.entries(CATEGORIES).map(([name, url]) =>
       scrapeCategory(name, url)
     );
     const results = await Promise.all(tasks);
 
-    // Merge all regular and chroma
     const mergedRegular = {};
     const mergedChroma = {};
 
@@ -100,12 +116,18 @@ module.exports = async (req, res) => {
       Object.assign(mergedChroma, result.chroma);
     }
 
-    console.log(`Total: ${Object.keys(mergedRegular).length} regular, ${Object.keys(mergedChroma).length} chroma`);
-
-    res.status(200).json({
+    const finalData = {
       regular: mergedRegular,
       chroma: mergedChroma,
-    });
+    };
+
+    // Save to cache
+    cache.data = finalData;
+    cache.timestamp = now;
+
+    console.log(`Total: ${Object.keys(mergedRegular).length} regular, ${Object.keys(mergedChroma).length} chroma`);
+
+    res.status(200).json(finalData);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
