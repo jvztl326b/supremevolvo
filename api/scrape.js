@@ -1,5 +1,4 @@
-const puppeteer = require('puppeteer-core');
-const chromium = require('@sparticuz/chromium');
+const { parse } = require('node-html-parser');
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -11,83 +10,55 @@ module.exports = async (req, res) => {
   const category = req.query.category || 'godlies';
   const url = `https://supremevalues.com/mm2/${category}`;
 
-  let browser = null;
   try {
-    const executablePath = await chromium.executablePath();
-
-    // CRITICAL: Set library path so Chromium can find extracted libs
-    const execDir = executablePath.substring(0, executablePath.lastIndexOf('/'));
-    process.env.LD_LIBRARY_PATH = execDir + ':' + (process.env.LD_LIBRARY_PATH || '');
-
-    browser = await puppeteer.launch({
-      args: chromium.args,
-      defaultViewport: chromium.defaultViewport,
-      executablePath: executablePath,
-      headless: chromium.headless,
-      timeout: 30000,
+    // Fetch the HTML
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      },
     });
 
-    const page = await browser.newPage();
+    const html = await response.text();
+    const root = parse(html);
 
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-    );
+    const regular = {};
+    const chroma = {};
 
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 20000 });
+    // Find all .itemcolumn divs
+    const columns = root.querySelectorAll('.itemcolumn');
+    columns.forEach(col => {
+      const head = col.querySelector('.itemhead');
+      if (!head) return;
 
-    // Scroll to load lazy items
-    await page.evaluate(async () => {
-      await new Promise((resolve) => {
-        let totalHeight = 0;
-        const distance = 500;
-        const timer = setInterval(() => {
-          const scrollHeight = document.body.scrollHeight;
-          window.scrollBy(0, distance);
-          totalHeight += distance;
-          if (totalHeight >= scrollHeight) {
-            clearInterval(timer);
-            resolve();
-          }
-        }, 100);
-      });
-    });
+      let name = head.text.trim();
+      let value = parseInt(col.getAttribute('data-value'));
 
-    await page.waitForTimeout(2000);
-
-    const data = await page.evaluate(() => {
-      const regular = {};
-      const chroma = {};
-      document.querySelectorAll('.itemcolumn').forEach(col => {
-        const head = col.querySelector('.itemhead');
-        if (!head) return;
-        let name = head.textContent.trim();
-        let value = parseInt(col.dataset.value);
-        if (!value || isNaN(value)) {
-          const valEl = col.querySelector('.itemvalue');
-          if (valEl) {
-            value = parseInt(valEl.textContent.replace(/,/g, '').trim());
-          }
+      if (!value || isNaN(value) || value <= 0) {
+        const valEl = col.querySelector('.itemvalue');
+        if (valEl) {
+          value = parseInt(valEl.text.replace(/,/g, '').trim());
         }
-        if (!value || isNaN(value) || value <= 0) return;
+      }
 
-        const isChroma = col.classList.contains('chroma') ||
-                         name.toLowerCase().startsWith('chroma ') ||
-                         name.toLowerCase().startsWith('c. ');
-        if (isChroma) {
-          name = name.replace(/^(chroma|c\.)\s+/i, '').trim();
-          chroma[name] = value;
-        } else {
-          regular[name] = value;
-        }
-      });
-      return { regular, chroma };
+      if (!value || isNaN(value) || value <= 0) return;
+
+      // Chroma detection
+      const classList = col.classNames || [];
+      const isChroma = classList.includes('chroma') ||
+                       name.toLowerCase().startsWith('chroma ') ||
+                       name.toLowerCase().startsWith('c. ');
+
+      if (isChroma) {
+        name = name.replace(/^(chroma|c\.)\s+/i, '').trim();
+        chroma[name] = value;
+      } else {
+        regular[name] = value;
+      }
     });
 
-    await browser.close();
-    res.status(200).json(data);
+    res.status(200).json({ regular, chroma });
   } catch (error) {
     console.error(error);
-    if (browser) await browser.close();
     res.status(500).json({ error: error.message });
   }
 };
