@@ -1,8 +1,7 @@
-// api/scrape.js
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
+const chromium = require('@sparticuz/chromium');
 
 module.exports = async (req, res) => {
-  // Enable CORS for Roblox
   res.setHeader('Access-Control-Allow-Origin', '*');
 
   if (req.method !== 'GET') {
@@ -12,11 +11,17 @@ module.exports = async (req, res) => {
   const category = req.query.category || 'godlies';
   const url = `https://supremevalues.com/mm2/${category}`;
 
+  let browser = null;
   try {
-    const browser = await puppeteer.launch({
-      headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    // Launch Chromium using the Vercel‑compatible binary
+    browser = await puppeteer.launch({
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless,
+      timeout: 30000,
     });
+
     const page = await browser.newPage();
 
     await page.setUserAgent(
@@ -78,6 +83,7 @@ module.exports = async (req, res) => {
     res.status(200).json(data);
   } catch (error) {
     console.error(error);
+    if (browser) await browser.close();
     res.status(500).json({ error: error.message });
   }
 };
