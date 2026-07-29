@@ -5,21 +5,19 @@ const CATEGORIES = {
   chromas: 'https://supremevalues.com/mm2/chromas',
   ancients: 'https://supremevalues.com/mm2/ancients',
   uniques: 'https://supremevalues.com/mm2/uniques',
+  vintages: 'https://supremevalues.com/mm2/vintages', // optional
 };
 
 const SCRAPINGBEE_KEY = process.env.SCRAPINGBEE_API_KEY;
 
-// Cache (10 min)
+// ⏰ Cache TTL: 12 hours (43200000 ms)
 let cache = { data: null, timestamp: 0 };
-const CACHE_TTL = 10 * 60 * 1000;
+const CACHE_TTL = 12 * 60 * 60 * 1000; // 12 hours
 
-// 🧠 Smart value extractor – tries data-value, then .itemvalue, then regex on whole column
 function extractValue(col) {
-  // 1. Try data-value attribute
   let val = parseInt(col.getAttribute('data-value'));
   if (!isNaN(val) && val > 0) return val;
 
-  // 2. Try .itemvalue element
   const valEl = col.querySelector('.itemvalue');
   if (valEl) {
     const text = valEl.text.replace(/,/g, '').trim();
@@ -27,21 +25,17 @@ function extractValue(col) {
     if (!isNaN(num) && num > 0) return num;
   }
 
-  // 3. 🔥 FALLBACK: scan all text in the column for the largest number
   const text = col.textContent;
   const matches = text.match(/\b(\d{1,6})\b/g);
   if (matches) {
-    const nums = matches.map(Number).filter(n => n > 10); // ignore tiny numbers like 1, 2
-    if (nums.length > 0) {
-      return Math.max(...nums); // the value is usually the biggest number
-    }
+    const nums = matches.map(Number).filter(n => n > 10);
+    if (nums.length) return Math.max(...nums);
   }
-
-  return null; // couldn't find a value
+  return null;
 }
 
 async function scrapeCategory(name, url) {
-  console.log(`[${name}] Start scraping...`);
+  console.log(`[${name}] Scraping with ScrapingBee...`);
 
   const targetUrl = `https://app.scrapingbee.com/api/v1/?api_key=${SCRAPINGBEE_KEY}&url=${encodeURIComponent(url)}&render_js=true&premium_proxy=true&block_ads=true&timeout=15000`;
 
@@ -62,17 +56,14 @@ async function scrapeCategory(name, url) {
   const root = parse(html);
   const regular = {};
   const chroma = {};
-
   const columns = root.querySelectorAll('.itemcolumn');
   console.log(`[${name}] Found ${columns.length} items`);
 
   columns.forEach(col => {
     const head = col.querySelector('.itemhead');
     if (!head) return;
-
     let nameTag = head.text.trim();
-    const value = extractValue(col); // 🆕 using the smart extractor
-
+    const value = extractValue(col);
     if (!value || value <= 0) return;
 
     const classAttr = col.getAttribute('class') || '';
@@ -95,21 +86,24 @@ async function scrapeCategory(name, url) {
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
 
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+  if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
   if (!SCRAPINGBEE_KEY) {
     return res.status(500).json({ error: 'Missing SCRAPINGBEE_API_KEY environment variable' });
   }
 
   const now = Date.now();
-  if (cache.data && (now - cache.timestamp) < CACHE_TTL) {
-    console.log('✅ Serving from cache');
+
+  // 🔥 Force refresh if query parameter ?refresh=true is passed
+  const forceRefresh = req.query.refresh === 'true';
+
+  if (!forceRefresh && cache.data && (now - cache.timestamp) < CACHE_TTL) {
+    console.log('✅ Serving from cache (last updated ' + new Date(cache.timestamp).toISOString() + ')');
     return res.status(200).json(cache.data);
   }
 
   try {
+    console.log('🔄 Cache expired or force refresh – scraping fresh...');
     const tasks = Object.entries(CATEGORIES).map(([name, url]) =>
       scrapeCategory(name, url)
     );
@@ -117,7 +111,6 @@ module.exports = async (req, res) => {
 
     const mergedRegular = {};
     const mergedChroma = {};
-
     for (const result of results) {
       Object.assign(mergedRegular, result.regular);
       Object.assign(mergedChroma, result.chroma);
