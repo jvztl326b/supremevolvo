@@ -1,3 +1,5 @@
+const puppeteer = require('puppeteer-core');
+const chromium = require('@sparticuz/chromium');
 const { parse } = require('node-html-parser');
 
 const CATEGORIES = {
@@ -8,7 +10,13 @@ const CATEGORIES = {
   vintages: 'https://supremevalues.com/mm2/vintages',
 };
 
-// Extract value from an item column
+// 🔥 Cache that auto‑expires after 10 minutes
+let cache = {
+  data: null,
+  timestamp: 0,
+};
+const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
 function extractValue(col) {
   let val = parseInt(col.getAttribute('data-value'));
   if (!isNaN(val) && val > 0) return val;
@@ -20,7 +28,6 @@ function extractValue(col) {
     if (!isNaN(num) && num > 0) return num;
   }
 
-  // Fallback: scan for numbers
   const text = col.textContent;
   const matches = text.match(/\b(\d{1,6})\b/g);
   if (matches) {
@@ -30,87 +37,107 @@ function extractValue(col) {
   return null;
 }
 
-// Fetch HTML with direct or proxy fallback
-async function fetchHTML(url) {
-  // Try direct first
-  try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-      },
-    });
-    if (response.ok) {
-      const html = await response.text();
-      if (html.length > 500) return html;
-    }
-  } catch (_) {}
+// Launch browser with retries
+async function launchBrowser(retries = 3) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const executablePath = await chromium.executablePath();
+      const execDir = executablePath.substring(0, executablePath.lastIndexOf('/'));
+      process.env.LD_LIBRARY_PATH = `${execDir}:${process.env.LD_LIBRARY_PATH || ''}`;
 
-  // Fallback: use a free CORS proxy
-  try {
-    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-    const response = await fetch(proxyUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-    });
-    if (response.ok) {
-      const html = await response.text();
-      if (html.length > 500) return html;
+      const browser = await puppeteer.launch({
+        args: [
+          ...chromium.args,
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--single-process',
+        ],
+        defaultViewport: chromium.defaultViewport,
+        executablePath: executablePath,
+        headless: chromium.headless,
+        timeout: 15000,
+      });
+      return browser;
+    } catch (error) {
+      console.log(`[Launch] Attempt ${attempt} failed: ${error.message}`);
+      if (attempt === retries) throw error;
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
-  } catch (_) {}
-
-  return null;
+  }
 }
 
-async function scrapeCategory(name, url) {
-  console.log(`[${name}] Fetching...`);
-  const html = await fetchHTML(url);
-  if (!html) {
-    console.log(`[${name}] Failed`);
+async function scrapeCategory(page, name, url) {
+  console.log(`[${name}] Loading...`);
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    await page.waitForSelector('.itemcolumn', { timeout: 5000 }).catch(() => {});
+
+    const html = await page.content();
+    console.log(`[${name}] HTML length: ${html.length}`);
+
+    if (html.length < 500) {
+      console.log(`[${name}] Empty or too short`);
+      return { regular: {}, chroma: {} };
+    }
+
+    const root = parse(html);
+    const regular = {};
+    const chroma = {};
+    const columns = root.querySelectorAll('.itemcolumn');
+    console.log(`[${name}] Found ${columns.length} items`);
+
+    columns.forEach(col => {
+      const head = col.querySelector('.itemhead');
+      if (!head) return;
+      let nameTag = head.text.trim();
+      const value = extractValue(col);
+      if (!value || value <= 0) return;
+
+      const classAttr = col.getAttribute('class') || '';
+      const isChroma = classAttr.includes('chroma') ||
+                       nameTag.toLowerCase().startsWith('chroma ') ||
+                       nameTag.toLowerCase().startsWith('c. ');
+
+      if (isChroma) {
+        nameTag = nameTag.replace(/^(chroma|c\.)\s+/i, '').trim();
+        chroma[nameTag] = value;
+      } else {
+        regular[nameTag] = value;
+      }
+    });
+
+    console.log(`[${name}] Extracted ${Object.keys(regular).length + Object.keys(chroma).length} items`);
+    return { regular, chroma };
+  } catch (error) {
+    console.error(`[${name}] Error:`, error.message);
     return { regular: {}, chroma: {} };
   }
-
-  const root = parse(html);
-  const regular = {};
-  const chroma = {};
-  const columns = root.querySelectorAll('.itemcolumn');
-  console.log(`[${name}] Found ${columns.length} items`);
-
-  columns.forEach(col => {
-    const head = col.querySelector('.itemhead');
-    if (!head) return;
-    let nameTag = head.text.trim();
-    const value = extractValue(col);
-    if (!value || value <= 0) return;
-
-    const classAttr = col.getAttribute('class') || '';
-    const isChroma = classAttr.includes('chroma') ||
-                     nameTag.toLowerCase().startsWith('chroma ') ||
-                     nameTag.toLowerCase().startsWith('c. ');
-
-    if (isChroma) {
-      nameTag = nameTag.replace(/^(chroma|c\.)\s+/i, '').trim();
-      chroma[nameTag] = value;
-    } else {
-      regular[nameTag] = value;
-    }
-  });
-
-  console.log(`[${name}] Extracted ${Object.keys(regular).length + Object.keys(chroma).length} items`);
-  return { regular, chroma };
 }
 
-module.exports = async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-
-  if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
-
+// Main scraping function – uses a single browser with multiple pages
+async function scrapeAll() {
+  let browser;
   try {
-    console.log('🔄 Scraping with direct fetch...');
-    const tasks = Object.entries(CATEGORIES).map(([name, url]) =>
-      scrapeCategory(name, url)
+    console.log('🔄 Scraping fresh data...');
+    browser = await launchBrowser();
+
+    const pages = await Promise.all(
+      Object.entries(CATEGORIES).map(async ([name, url]) => {
+        const page = await browser.newPage();
+        return { name, url, page };
+      })
     );
-    const results = await Promise.all(tasks);
+
+    const scrapePromises = pages.map(({ name, url, page }) =>
+      scrapeCategory(page, name, url)
+    );
+    const results = await Promise.all(scrapePromises);
+
+    // Close pages and browser
+    for (const { page } of pages) await page.close().catch(() => {});
+    await browser.close();
 
     const mergedRegular = {};
     const mergedChroma = {};
@@ -119,15 +146,43 @@ module.exports = async (req, res) => {
       Object.assign(mergedChroma, result.chroma);
     }
 
-    const finalData = {
+    return {
       regular: mergedRegular,
       chroma: mergedChroma,
     };
-
-    console.log(`✅ TOTAL: ${Object.keys(mergedRegular).length} regular, ${Object.keys(mergedChroma).length} chroma`);
-    res.status(200).json(finalData);
   } catch (error) {
-    console.error('FATAL:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Scrape error:', error);
+    if (browser) await browser.close().catch(() => {});
+    throw error;
   }
+}
+
+module.exports = async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+
+  if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+
+  const now = Date.now();
+
+  // 🔥 If cache is older than 10 minutes, refresh it
+  if (!cache.data || (now - cache.timestamp) > CACHE_TTL) {
+    console.log('⏰ Cache expired – scraping fresh...');
+    try {
+      cache.data = await scrapeAll();
+      cache.timestamp = now;
+      console.log('✅ Cache updated');
+    } catch (error) {
+      console.error('Scrape failed:', error);
+      // If we have old cache, serve it even if expired
+      if (cache.data) {
+        console.log('⚠️ Serving stale cache due to error');
+        return res.status(200).json(cache.data);
+      }
+      return res.status(500).json({ error: error.message });
+    }
+  } else {
+    console.log(`✅ Serving cached data (${Math.round((now - cache.timestamp) / 1000 / 60)} minutes old)`);
+  }
+
+  res.status(200).json(cache.data);
 };
