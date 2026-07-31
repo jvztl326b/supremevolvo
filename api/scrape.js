@@ -1,6 +1,6 @@
-const { parse } = require('node-html-parser');
 const puppeteer = require('puppeteer-core');
 const chromium = require('@sparticuz/chromium');
+const { parse } = require('node-html-parser');
 
 const CATEGORIES = {
   godlies: 'https://supremevalues.com/mm2/godlies',
@@ -19,9 +19,11 @@ let cache = { data: null, timestamp: 0 };
 const CACHE_TTL = 10 * 60 * 1000;
 
 function extractValue(col) {
+  // 1. Try data-value attribute (most reliable)
   let val = parseInt(col.getAttribute('data-value'));
   if (!isNaN(val) && val > 0) return val;
 
+  // 2. Try .itemvalue element
   const valEl = col.querySelector('.itemvalue');
   if (valEl) {
     const text = valEl.text.replace(/,/g, '').trim();
@@ -29,11 +31,25 @@ function extractValue(col) {
     if (!isNaN(num) && num > 0) return num;
   }
 
+  // 3. Check if this is a "Value - x4 T1 Legendaries" type item
+  const fullText = col.textContent || '';
+  if (fullText.includes('Value - x') && fullText.includes('Legendaries')) {
+    // These are low-tier items – return 1
+    return 1;
+  }
+
+  // 4. Fallback: scan all numbers in the column
   const text = col.textContent;
   const matches = text.match(/\b(\d{1,6})\b/g);
   if (matches) {
-    const nums = matches.map(Number).filter(n => n > 10);
-    if (nums.length) return Math.max(...nums);
+    const nums = matches.map(Number).filter(n => n > 0);
+    if (nums.length) {
+      // Take the largest number that isn't a year
+      const validNums = nums.filter(n => n < 2010 || n > 2026);
+      if (validNums.length) {
+        return Math.max(...validNums);
+      }
+    }
   }
   return null;
 }
