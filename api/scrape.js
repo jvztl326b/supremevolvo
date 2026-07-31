@@ -30,32 +30,51 @@ function extractValue(col) {
   return null;
 }
 
+// Retry launching browser up to 3 times
+async function launchBrowser(retries = 3) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const executablePath = await chromium.executablePath();
+      const execDir = executablePath.substring(0, executablePath.lastIndexOf('/'));
+      process.env.LD_LIBRARY_PATH = `${execDir}:${process.env.LD_LIBRARY_PATH || ''}`;
+
+      const browser = await puppeteer.launch({
+        args: [
+          ...chromium.args,
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--single-process',
+        ],
+        defaultViewport: chromium.defaultViewport,
+        executablePath: executablePath,
+        headless: chromium.headless,
+        timeout: 20000,
+      });
+      return browser;
+    } catch (error) {
+      console.log(`[Launch] Attempt ${attempt} failed: ${error.message}`);
+      if (attempt === retries) throw error;
+      // Wait 1 second before retrying (ETXTBSY often resolves quickly)
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+}
+
 async function scrapeCategory(name, url) {
   console.log(`[${name}] Launching browser...`);
 
   let browser;
   try {
-    const executablePath = await chromium.executablePath();
-
-    // 🔥 FIX: Set library path so Chromium can find system libs
-    const execDir = executablePath.substring(0, executablePath.lastIndexOf('/'));
-    process.env.LD_LIBRARY_PATH = `${execDir}:${process.env.LD_LIBRARY_PATH || ''}`;
-
-    browser = await puppeteer.launch({
-      args: [
-        ...chromium.args,
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-      ],
-      defaultViewport: chromium.defaultViewport,
-      executablePath: executablePath,
-      headless: chromium.headless,
-      timeout: 15000,
-    });
+    browser = await launchBrowser();
 
     const page = await browser.newPage();
-    await page.goto(url, { waitUntil: 'networkidle0', timeout: 15000 });
+    // Increase navigation timeout to 30 seconds
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+    // Wait a bit for any dynamic content
+    await page.waitForSelector('.itemcolumn', { timeout: 10000 }).catch(() => {});
 
     const html = await page.content();
     await browser.close();
