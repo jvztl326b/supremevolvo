@@ -8,10 +8,6 @@ const CATEGORIES = {
   vintages: 'https://supremevalues.com/mm2/vintages', // optional
 };
 
-// ⏰ Cache TTL: 12 hours
-let cache = { data: null, timestamp: 0 };
-const CACHE_TTL = 12 * 60 * 60 * 1000; // 12 hours
-
 function extractValue(col) {
   let val = parseInt(col.getAttribute('data-value'));
   if (!isNaN(val) && val > 0) return val;
@@ -41,7 +37,6 @@ async function scrapeCategory(name, url) {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5',
-        'Cache-Control': 'no-cache',
       },
     });
 
@@ -97,18 +92,8 @@ module.exports = async (req, res) => {
 
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
-  const now = Date.now();
-
-  // Force refresh if ?refresh=true is passed
-  const forceRefresh = req.query.refresh === 'true';
-
-  if (!forceRefresh && cache.data && (now - cache.timestamp) < CACHE_TTL) {
-    console.log('✅ Serving from cache (last updated ' + new Date(cache.timestamp).toISOString() + ')');
-    return res.status(200).json(cache.data);
-  }
-
   try {
-    console.log('🔄 Cache expired or force refresh – scraping fresh...');
+    console.log('🔄 Scraping fresh...');
     const tasks = Object.entries(CATEGORIES).map(([name, url]) =>
       scrapeCategory(name, url)
     );
@@ -125,9 +110,6 @@ module.exports = async (req, res) => {
       regular: mergedRegular,
       chroma: mergedChroma,
     };
-
-    cache.data = finalData;
-    cache.timestamp = now;
 
     console.log(`✅ TOTAL: ${Object.keys(mergedRegular).length} regular, ${Object.keys(mergedChroma).length} chroma`);
     res.status(200).json(finalData);
