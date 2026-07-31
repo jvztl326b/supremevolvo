@@ -35,10 +35,21 @@ async function scrapeCategory(name, url) {
 
   let browser;
   try {
+    const executablePath = await chromium.executablePath();
+
+    // 🔥 FIX: Set library path so Chromium can find system libs
+    const execDir = executablePath.substring(0, executablePath.lastIndexOf('/'));
+    process.env.LD_LIBRARY_PATH = `${execDir}:${process.env.LD_LIBRARY_PATH || ''}`;
+
     browser = await puppeteer.launch({
-      args: chromium.args,
+      args: [
+        ...chromium.args,
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+      ],
       defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(),
+      executablePath: executablePath,
       headless: chromium.headless,
       timeout: 15000,
     });
@@ -46,7 +57,6 @@ async function scrapeCategory(name, url) {
     const page = await browser.newPage();
     await page.goto(url, { waitUntil: 'networkidle0', timeout: 15000 });
 
-    // Get the rendered HTML
     const html = await page.content();
     await browser.close();
 
