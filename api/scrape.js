@@ -30,59 +30,20 @@ function extractValue(col) {
   return null;
 }
 
-// Retry launching browser up to 3 times
-async function launchBrowser(retries = 3) {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      const executablePath = await chromium.executablePath();
-      const execDir = executablePath.substring(0, executablePath.lastIndexOf('/'));
-      process.env.LD_LIBRARY_PATH = `${execDir}:${process.env.LD_LIBRARY_PATH || ''}`;
+async function scrapeCategory(page, name, url) {
+  console.log(`[${name}] Loading...`);
 
-      const browser = await puppeteer.launch({
-        args: [
-          ...chromium.args,
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-gpu',
-          '--single-process',
-        ],
-        defaultViewport: chromium.defaultViewport,
-        executablePath: executablePath,
-        headless: chromium.headless,
-        timeout: 20000,
-      });
-      return browser;
-    } catch (error) {
-      console.log(`[Launch] Attempt ${attempt} failed: ${error.message}`);
-      if (attempt === retries) throw error;
-      // Wait 1 second before retrying (ETXTBSY often resolves quickly)
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  }
-}
-
-async function scrapeCategory(name, url) {
-  console.log(`[${name}] Launching browser...`);
-
-  let browser;
   try {
-    browser = await launchBrowser();
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
-    const page = await browser.newPage();
-    // Increase navigation timeout to 30 seconds
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-
-    // Wait a bit for any dynamic content
-    await page.waitForSelector('.itemcolumn', { timeout: 10000 }).catch(() => {});
+    // Wait a short moment for items to render
+    await page.waitForSelector('.itemcolumn', { timeout: 5000 }).catch(() => {});
 
     const html = await page.content();
-    await browser.close();
-
     console.log(`[${name}] HTML length: ${html.length}`);
 
     if (html.length < 500) {
-      console.log(`[${name}] Empty or too short response`);
+      console.log(`[${name}] Empty or too short`);
       return { regular: {}, chroma: {} };
     }
 
@@ -116,8 +77,38 @@ async function scrapeCategory(name, url) {
     return { regular, chroma };
   } catch (error) {
     console.error(`[${name}] Error:`, error.message);
-    if (browser) await browser.close();
     return { regular: {}, chroma: {} };
+  }
+}
+
+// Launch browser once with retries
+async function launchBrowser(retries = 3) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const executablePath = await chromium.executablePath();
+      const execDir = executablePath.substring(0, executablePath.lastIndexOf('/'));
+      process.env.LD_LIBRARY_PATH = `${execDir}:${process.env.LD_LIBRARY_PATH || ''}`;
+
+      const browser = await puppeteer.launch({
+        args: [
+          ...chromium.args,
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--single-process',
+        ],
+        defaultViewport: chromium.defaultViewport,
+        executablePath: executablePath,
+        headless: chromium.headless,
+        timeout: 15000,
+      });
+      return browser;
+    } catch (error) {
+      console.log(`[Launch] Attempt ${attempt} failed: ${error.message}`);
+      if (attempt === retries) throw error;
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
   }
 }
 
@@ -126,12 +117,32 @@ module.exports = async (req, res) => {
 
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
+  let browser;
   try {
-    console.log('🔄 Scraping fresh with Puppeteer...');
-    const tasks = Object.entries(CATEGORIES).map(([name, url]) =>
-      scrapeCategory(name, url)
+    console.log('🔄 Starting single browser...');
+    browser = await launchBrowser();
+
+    // Create one page per category
+    const pageTasks = Object.entries(CATEGORIES).map(([name, url]) => {
+      return browser.newPage().then(page => {
+        return { name, url, page };
+      });
+    });
+
+    const pages = await Promise.all(pageTasks);
+
+    // Scrape all categories in parallel using the same browser
+    const scrapePromises = pages.map(({ name, url, page }) =>
+      scrapeCategory(page, name, url)
     );
-    const results = await Promise.all(tasks);
+
+    const results = await Promise.all(scrapePromises);
+
+    // Close all pages and browser
+    for (const { page } of pages) {
+      await page.close().catch(() => {});
+    }
+    await browser.close();
 
     const mergedRegular = {};
     const mergedChroma = {};
@@ -149,6 +160,7 @@ module.exports = async (req, res) => {
     res.status(200).json(finalData);
   } catch (error) {
     console.error('FATAL:', error);
+    if (browser) await browser.close().catch(() => {});
     res.status(500).json({ error: error.message });
   }
 };
