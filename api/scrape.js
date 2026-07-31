@@ -8,9 +8,7 @@ const CATEGORIES = {
   vintages: 'https://supremevalues.com/mm2/vintages', // optional
 };
 
-const SCRAPINGBEE_KEY = process.env.SCRAPINGBEE_API_KEY;
-
-// ⏰ Cache TTL: 12 hours (43200000 ms)
+// ⏰ Cache TTL: 12 hours
 let cache = { data: null, timestamp: 0 };
 const CACHE_TTL = 12 * 60 * 60 * 1000; // 12 hours
 
@@ -35,52 +33,63 @@ function extractValue(col) {
 }
 
 async function scrapeCategory(name, url) {
-  console.log(`[${name}] Scraping with ScrapingBee...`);
+  console.log(`[${name}] Fetching directly...`);
 
-  const targetUrl = `https://app.scrapingbee.com/api/v1/?api_key=${SCRAPINGBEE_KEY}&url=${encodeURIComponent(url)}&render_js=true&premium_proxy=true&block_ads=true&timeout=15000`;
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Cache-Control': 'no-cache',
+      },
+    });
 
-  const response = await fetch(targetUrl);
-  if (!response.ok) {
-    console.log(`[${name}] HTTP error ${response.status}`);
-    return { regular: {}, chroma: {} };
-  }
-
-  const html = await response.text();
-  console.log(`[${name}] HTML length: ${html.length}`);
-
-  if (html.length < 500 || html.includes('Access Denied') || html.includes('Blocked')) {
-    console.log(`[${name}] Blocked or empty response`);
-    return { regular: {}, chroma: {} };
-  }
-
-  const root = parse(html);
-  const regular = {};
-  const chroma = {};
-  const columns = root.querySelectorAll('.itemcolumn');
-  console.log(`[${name}] Found ${columns.length} items`);
-
-  columns.forEach(col => {
-    const head = col.querySelector('.itemhead');
-    if (!head) return;
-    let nameTag = head.text.trim();
-    const value = extractValue(col);
-    if (!value || value <= 0) return;
-
-    const classAttr = col.getAttribute('class') || '';
-    const isChroma = classAttr.includes('chroma') ||
-                     nameTag.toLowerCase().startsWith('chroma ') ||
-                     nameTag.toLowerCase().startsWith('c. ');
-
-    if (isChroma) {
-      nameTag = nameTag.replace(/^(chroma|c\.)\s+/i, '').trim();
-      chroma[nameTag] = value;
-    } else {
-      regular[nameTag] = value;
+    if (!response.ok) {
+      console.log(`[${name}] HTTP error ${response.status}`);
+      return { regular: {}, chroma: {} };
     }
-  });
 
-  console.log(`[${name}] Extracted ${Object.keys(regular).length + Object.keys(chroma).length} items`);
-  return { regular, chroma };
+    const html = await response.text();
+    console.log(`[${name}] HTML length: ${html.length}`);
+
+    if (html.length < 500 || html.includes('Access Denied') || html.includes('Blocked')) {
+      console.log(`[${name}] Blocked or empty response`);
+      return { regular: {}, chroma: {} };
+    }
+
+    const root = parse(html);
+    const regular = {};
+    const chroma = {};
+    const columns = root.querySelectorAll('.itemcolumn');
+    console.log(`[${name}] Found ${columns.length} items`);
+
+    columns.forEach(col => {
+      const head = col.querySelector('.itemhead');
+      if (!head) return;
+      let nameTag = head.text.trim();
+      const value = extractValue(col);
+      if (!value || value <= 0) return;
+
+      const classAttr = col.getAttribute('class') || '';
+      const isChroma = classAttr.includes('chroma') ||
+                       nameTag.toLowerCase().startsWith('chroma ') ||
+                       nameTag.toLowerCase().startsWith('c. ');
+
+      if (isChroma) {
+        nameTag = nameTag.replace(/^(chroma|c\.)\s+/i, '').trim();
+        chroma[nameTag] = value;
+      } else {
+        regular[nameTag] = value;
+      }
+    });
+
+    console.log(`[${name}] Extracted ${Object.keys(regular).length + Object.keys(chroma).length} items`);
+    return { regular, chroma };
+  } catch (error) {
+    console.log(`[${name}] Fetch error: ${error.message}`);
+    return { regular: {}, chroma: {} };
+  }
 }
 
 module.exports = async (req, res) => {
@@ -88,13 +97,9 @@ module.exports = async (req, res) => {
 
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
-  if (!SCRAPINGBEE_KEY) {
-    return res.status(500).json({ error: 'Missing SCRAPINGBEE_API_KEY environment variable' });
-  }
-
   const now = Date.now();
 
-  // 🔥 Force refresh if query parameter ?refresh=true is passed
+  // Force refresh if ?refresh=true is passed
   const forceRefresh = req.query.refresh === 'true';
 
   if (!forceRefresh && cache.data && (now - cache.timestamp) < CACHE_TTL) {
