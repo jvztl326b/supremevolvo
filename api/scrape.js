@@ -1,3 +1,5 @@
+const puppeteer = require('puppeteer-core');
+const chromium = require('@sparticuz/chromium');
 const { parse } = require('node-html-parser');
 
 const CATEGORIES = {
@@ -5,7 +7,7 @@ const CATEGORIES = {
   chromas: 'https://supremevalues.com/mm2/chromas',
   ancients: 'https://supremevalues.com/mm2/ancients',
   uniques: 'https://supremevalues.com/mm2/uniques',
-  vintages: 'https://supremevalues.com/mm2/vintages', // optional
+  vintages: 'https://supremevalues.com/mm2/vintages',
 };
 
 function extractValue(col) {
@@ -29,27 +31,29 @@ function extractValue(col) {
 }
 
 async function scrapeCategory(name, url) {
-  console.log(`[${name}] Fetching directly...`);
+  console.log(`[${name}] Launching browser...`);
 
+  let browser;
   try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-      },
+    browser = await puppeteer.launch({
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless,
+      timeout: 15000,
     });
 
-    if (!response.ok) {
-      console.log(`[${name}] HTTP error ${response.status}`);
-      return { regular: {}, chroma: {} };
-    }
+    const page = await browser.newPage();
+    await page.goto(url, { waitUntil: 'networkidle0', timeout: 15000 });
 
-    const html = await response.text();
+    // Get the rendered HTML
+    const html = await page.content();
+    await browser.close();
+
     console.log(`[${name}] HTML length: ${html.length}`);
 
-    if (html.length < 500 || html.includes('Access Denied') || html.includes('Blocked')) {
-      console.log(`[${name}] Blocked or empty response`);
+    if (html.length < 500) {
+      console.log(`[${name}] Empty or too short response`);
       return { regular: {}, chroma: {} };
     }
 
@@ -82,7 +86,8 @@ async function scrapeCategory(name, url) {
     console.log(`[${name}] Extracted ${Object.keys(regular).length + Object.keys(chroma).length} items`);
     return { regular, chroma };
   } catch (error) {
-    console.log(`[${name}] Fetch error: ${error.message}`);
+    console.error(`[${name}] Error:`, error.message);
+    if (browser) await browser.close();
     return { regular: {}, chroma: {} };
   }
 }
@@ -93,7 +98,7 @@ module.exports = async (req, res) => {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
-    console.log('🔄 Scraping fresh...');
+    console.log('🔄 Scraping fresh with Puppeteer...');
     const tasks = Object.entries(CATEGORIES).map(([name, url]) =>
       scrapeCategory(name, url)
     );
