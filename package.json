@@ -1,7 +1,9 @@
 {
-  "name": "supremevalues-scraper",
+  "name": "supremevolvo",
   "version": "1.0.0",
   "dependencies": {
-    "node-html-parser": "^6.1.13"
+    "@sparticuz/chromium": "^121.0.0",
+    "node-html-parser": "^6.1.0",
+    "puppeteer-core": "^21.0.0"
   }
 }
